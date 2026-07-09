@@ -1,0 +1,5 @@
+.pio/
+lib/
+*.bin
+src/private_config.h
+include/private_config.h
