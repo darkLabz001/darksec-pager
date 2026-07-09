@@ -37,6 +37,12 @@
 #ifndef DEFAULT_OTA_PASS
 #define DEFAULT_OTA_PASS "changeme"
 #endif
+#ifndef DEFAULT_EMAIL
+#define DEFAULT_EMAIL ""
+#endif
+#ifndef DEFAULT_EMAIL_PASS
+#define DEFAULT_EMAIL_PASS ""
+#endif
 
 // ───────────────────────── config ─────────────────────────
 static const char* IRC_HOST  = "irc.libera.chat";
@@ -128,6 +134,9 @@ static void cfgLoad(){
   cfgNick=prefs.getString("nick",DEFAULT_NICK);
   cfgEmail=prefs.isKey("email")?prefs.getString("email"):"";
   cfgEmailPass=prefs.isKey("emailPass")?prefs.getString("emailPass"):"";
+  if(strlen(DEFAULT_SSID)>0){ cfgSsid=DEFAULT_SSID; cfgPass=DEFAULT_PASS; }
+  if(!cfgEmail.length() && strlen(DEFAULT_EMAIL)>0) cfgEmail=DEFAULT_EMAIL;
+  if(!cfgEmailPass.length() && strlen(DEFAULT_EMAIL_PASS)>0) cfgEmailPass=DEFAULT_EMAIL_PASS;
   notifyEnabled=prefs.getBool("notify",true);
   saverSec=prefs.getInt("saver",60);
   dispX=prefs.getInt("dx2",0); dispY=prefs.getInt("dy2",0);   // fresh keys => clean baseline
@@ -283,7 +292,8 @@ static void drawEmail(){
     gfx->print(sel?"> ":"  "); gfx->print(EMAIL_MENU[i]);
   }
   gfx->setTextSize(1); gfx->setTextColor(DIMTXT,BLACK);
-  gfx->setCursor(8,SCR_H-22); gfx->print(cfgEmail.length()?cfgEmail.c_str():"No email account configured");
+  gfx->setCursor(8,SCR_H-33); gfx->print(cfgEmail.length()?cfgEmail.c_str():"No email account configured");
+  gfx->setCursor(8,SCR_H-22); gfx->print(cfgEmailPass.length()?"App password: saved":"App password: not set");
   gfx->setCursor(8,SCR_H-11); gfx->print("Gmail requires an app password");
 }
 
@@ -501,6 +511,7 @@ static void beginTextIn(const char* title,bool pw,int purpose,const String& init
 }
 static void startWifiScan();
 static void startOta();
+static void ircConnect();
 static void openHomeTab(){
   switch(homeSel){
     case 0: state=ST_CHAT; unread=0; uiDirty=true; break;
@@ -568,15 +579,15 @@ static void pumpInput(){
       else if(c=='a'||c=='w'){ homeSel=(homeSel+HOME_N-1)%HOME_N; uiDirty=true; }
       else if(c=='d'||c=='s'){ homeSel=(homeSel+1)%HOME_N; uiDirty=true; }
     } else if(state==ST_CHAT){
-      if(c==KC_ENTER){ if(inputLine.length()){ String o=inputLine; inputLine=""; if(ircJoined){irc.printf("PRIVMSG %s :%s\r\n",IRC_CHAN,o.c_str()); pushMsg(cfgNick,o,true);} else pushMsg("*","not connected",false); scrollOff=0; uiDirty=true; } }
+      if(c==KC_ENTER){ if(inputLine.length()){ String o=inputLine; inputLine=""; if(ircJoined){irc.printf("PRIVMSG %s :%s\r\n",IRC_CHAN,o.c_str()); pushMsg(cfgNick,o,true);} else { if(!WiFi.isConnected()) pushMsg("*","wifi offline - check WiFi tab/password",false); else if(!irc.connected()){ pushMsg("*","irc connecting - try again",false); ircConnect(); } else pushMsg("*","joining channel - try again",false); } scrollOff=0; uiDirty=true; } }
       else if(c==KC_BKSP){ if(inputLine.length()){inputLine.remove(inputLine.length()-1);uiDirty=true;} }
       else if(c>=' '&&c<127){ if(inputLine.length()<400){inputLine+=c;uiDirty=true;} }
     } else if(state==ST_TEXTIN){
       if(c==KC_ENTER){
         if(tiPurpose==2){ if(tiBuf.length()){cfgSaveNick(tiBuf);ircNick=tiBuf;irc.stop();} state=ST_CHAT; uiDirty=true; }
         else if(tiPurpose==1){ cfgSaveWifi(pendingSsid,tiBuf); WiFi.disconnect(); WiFi.begin(cfgSsid.c_str(),cfgPass.c_str()); state=ST_CHAT; uiDirty=true; }
-        else if(tiPurpose==3){ cfgSaveEmail(tiBuf); state=ST_EMAIL; uiDirty=true; }
-        else if(tiPurpose==4){ if(tiBuf.length())cfgSaveEmailPass(tiBuf); state=ST_EMAIL; uiDirty=true; }
+        else if(tiPurpose==3){ cfgSaveEmail(tiBuf); pushMsg("email","address saved",false); state=ST_EMAIL; uiDirty=true; }
+        else if(tiPurpose==4){ if(tiBuf.length()){ cfgSaveEmailPass(tiBuf); pushMsg("email","app password saved",false); } state=ST_EMAIL; uiDirty=true; }
       } else if(c==KC_BKSP){ if(tiBuf.length()){tiBuf.remove(tiBuf.length()-1);uiDirty=true;} }
       else if(c>=' '&&c<127){ if(tiBuf.length()<63){tiBuf+=c;uiDirty=true;} }
     } else if(state==ST_CALIB){
@@ -652,7 +663,7 @@ static void ircKeepAlive(){ if(!irc.connected())return; uint32_t n=millis(); if(
 static uint32_t wifiTryMs=0;
 static void wifiConnectTo(const char* s,const char* p){
   if(!s || !*s) return;
-  Serial.printf("[wifi] connect %s\n",s);
+  Serial.printf("[wifi] connect %s pass=%s\n",s,(p&&*p)?"set":"empty");
   WiFi.begin(s,p); wifiTryMs=millis();
 }
 static void wifiEnsure(){

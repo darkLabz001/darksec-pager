@@ -23,6 +23,8 @@ For local defaults, copy `src/private_config.example.h` to `src/private_config.h
 #define DEFAULT_PASS "YourWiFiPassword"
 #define DEFAULT_NICK "DarkSecPager"
 #define DEFAULT_OTA_PASS "change-this-ota-password"
+#define DEFAULT_EMAIL "you@example.com"
+#define DEFAULT_EMAIL_PASS "your-email-app-password"
 ```
 
 Gmail requires an app password for embedded devices. A normal Google account password usually will not work.
