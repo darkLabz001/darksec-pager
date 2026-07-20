@@ -36,7 +36,7 @@ Gmail requires an app password for embedded devices. A normal Google account pas
 - T-Deck: ST7789 display, native visible area `240x320`, 5-way trackball (click = select, hold ≥600ms = back), onboard I2C keyboard co-processor.
 - USB serial/JTAG upload via `/dev/ttyACM0` on Linux (unverified for T-Deck — if it doesn't enumerate there, try `/dev/ttyUSB0`).
 
-T-Deck pin assignments come from LilyGo's own reference pinout and have not yet been verified against real hardware by this repo's maintainer. If the display looks rotated/mirrored or offset on first boot, use `Setup > Calibrate Screen` on-device — the same calibration flow works on both boards. T-Deck's flash size (`board_build.flash_size` in `platformio.ini`) is set to 16MB, the common default for T-Deck; double-check yours (e.g. `esptool.py flash_id`) before your first flash.
+T-Deck pin assignments come from LilyGo's own reference pinout and are confirmed working on real hardware, USB flashing included. Despite the T-Deck's flash chip physically being 16MB, `platformio.ini` deliberately declares `board_build.flash_size = 8MB` / `default_8MB.csv` — using the true 16MB config reproducibly reset-loops this exact board/toolchain combo before `setup()` ever runs (same class of issue the T-Pager env's comment already flags for that board). If the display looks rotated/mirrored or offset, use `Setup > Calibrate Screen` on-device — the same calibration flow works on both boards.
 
 ## Build
 
