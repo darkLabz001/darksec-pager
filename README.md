@@ -1,15 +1,15 @@
 # darksec-pager
 
-Firmware for the LilyGO T-LoRa-Pager / T-Pager built around a pager-style home screen.
+Firmware for the LilyGO T-LoRa-Pager / T-Pager and the LilyGo T-Deck, built around a pager-style home screen.
 
 ## Features
 
 - Home screen with tabs: Chat, Email, Wi-Fi, OTA, Setup.
 - IRC chat client for `#DarksecHQ` on Libera.Chat over TLS.
-- Wi-Fi setup from the device keyboard and encoder.
+- Wi-Fi setup from the device keyboard and encoder (T-Pager) or trackball (T-Deck).
 - OTA update mode from the device menu.
 - Unread chat count in the header and screensaver.
-- 222x480 native ST7796 panel support, rotated to a 480x222 UI.
+- T-Pager: 222x480 native ST7796 panel, rotated to a 480x222 UI. T-Deck: 240x320 native ST7789 panel, rotated to a 320x240 UI.
 - Email tab scaffold with account/app-password storage in device NVS.
 
 ## Secrets
@@ -31,22 +31,27 @@ Gmail requires an app password for embedded devices. A normal Google account pas
 
 ## Hardware
 
-- ESP32-S3 based LilyGO T-LoRa-Pager / T-Pager.
-- ST7796 display, native visible area `222x480`.
-- USB serial/JTAG upload via `/dev/ttyACM0` on Linux.
+- ESP32-S3 based LilyGO T-LoRa-Pager / T-Pager, or LilyGo T-Deck.
+- T-Pager: ST7796 display, native visible area `222x480`, rotary encoder + press + separate back button, TCA8418 matrix keyboard.
+- T-Deck: ST7789 display, native visible area `240x320`, 5-way trackball (click = select, hold ≥600ms = back), onboard I2C keyboard co-processor.
+- USB serial/JTAG upload via `/dev/ttyACM0` on Linux (unverified for T-Deck — if it doesn't enumerate there, try `/dev/ttyUSB0`).
+
+T-Deck pin assignments come from LilyGo's own reference pinout and have not yet been verified against real hardware by this repo's maintainer. If the display looks rotated/mirrored or offset on first boot, use `Setup > Calibrate Screen` on-device — the same calibration flow works on both boards. T-Deck's flash size (`board_build.flash_size` in `platformio.ini`) is set to 16MB, the common default for T-Deck; double-check yours (e.g. `esptool.py flash_id`) before your first flash.
 
 ## Build
 
 Install PlatformIO, then run:
 
 ```sh
-pio run -e t-lora-pager
+pio run -e t-lora-pager   # T-Pager
+pio run -e t-deck         # T-Deck
 ```
 
 On this machine PlatformIO is available as:
 
 ```sh
 ~/.local/bin/pio run -e t-lora-pager
+~/.local/bin/pio run -e t-deck
 ```
 
 ## Flash Over USB
@@ -60,13 +65,15 @@ ls /dev/ttyACM*
 Flash:
 
 ```sh
-pio run -e t-lora-pager -t upload --upload-port /dev/ttyACM0
+pio run -e t-lora-pager -t upload --upload-port /dev/ttyACM0   # T-Pager
+pio run -e t-deck -t upload --upload-port /dev/ttyACM0         # T-Deck
 ```
 
 Or on this machine:
 
 ```sh
 ~/.local/bin/pio run -e t-lora-pager -t upload --upload-port /dev/ttyACM0
+~/.local/bin/pio run -e t-deck -t upload --upload-port /dev/ttyACM0
 ```
 
 Monitor boot logs:
@@ -78,16 +85,19 @@ pio device monitor -p /dev/ttyACM0 -b 115200
 Expected display log after boot:
 
 ```text
-[hw] display 480x222
+[hw] display 480x222     # T-Pager
+[hw] display 320x240     # T-Deck
 ```
+
+On T-Deck, the first key press also logs the raw keyboard byte (`[hw] kb raw byte: 0x..`) — useful for confirming Enter/Backspace map to the expected codes if text entry misbehaves.
 
 ## Wi-Fi Setup
 
 From the pager home screen:
 
 1. Open `WiFi`.
-2. Select your network with the encoder.
-3. Press the encoder.
+2. Select your network (encoder on T-Pager, trackball on T-Deck).
+3. Press to select (encoder press on T-Pager, trackball click on T-Deck).
 4. Type the password.
 5. Press Enter to save.
 
@@ -102,13 +112,15 @@ First flash once over USB. Then on the pager:
 3. Upload over Wi-Fi:
 
 ```sh
-pio run -e t-lora-pager-ota -t upload
+pio run -e t-lora-pager-ota -t upload   # T-Pager
+pio run -e t-deck-ota -t upload         # T-Deck
 ```
 
 Or on this machine:
 
 ```sh
 ~/.local/bin/pio run -e t-lora-pager-ota -t upload
+~/.local/bin/pio run -e t-deck-ota -t upload
 ```
 
 Default public OTA password is `changeme`. Change it in your ignored `src/private_config.h` before using OTA on a real network.

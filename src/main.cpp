@@ -13,13 +13,15 @@
 #include <Preferences.h>
 #include <time.h>
 #include <Arduino_GFX_Library.h>
+
+#ifndef BOARD_TDECK
 #include <Adafruit_TCA8418.h>
 #include <RotaryEncoder.h>
-
 #define XPOWERS_CHIP_BQ25896
 #include <XPowersLib.h>
 #include <ExtensionIOXL9555.hpp>
-#include <HapticDrivers.hpp>
+#include <HapticDrivers.hpp>   // T-Deck has no haptic motor; this lib isn't needed there
+#endif
 
 #if __has_include("private_config.h")
 #include "private_config.h"
@@ -53,6 +55,7 @@ static const char* OTA_PASS = DEFAULT_OTA_PASS;
 #define DRV2605_ADDR 0x5A
 // ────────────────────────────────────────────────────────────
 
+#ifndef BOARD_TDECK
 // ST7796 subclass: runtime offset adjustment + a corrected writeAddrWindow.
 // (Arduino_GFX 1.3.9's ST7796 never applies _yStart to RASET, so the vertical
 // offset had no effect — this override fixes it.)
@@ -70,22 +73,52 @@ public:
     _bus->writeCommand(0x2C);                  // RAMWR
   }
 };
+#else
+// ST7789 subclass: same offset-fix pattern as DarkGFX (ST7796) above, kept
+// here preemptively so the on-device Calibrate Screen menu works the same
+// way on T-Deck even if this particular controller doesn't need the fix.
+class DarkGFX : public Arduino_ST7789 {
+public:
+  using Arduino_ST7789::Arduino_ST7789;
+  void setOffsets(uint8_t xo,uint8_t yo){
+    COL_OFFSET1=yo; COL_OFFSET2=yo; ROW_OFFSET1=xo; ROW_OFFSET2=xo;
+    setRotation(TFT_ROTATION);
+  }
+  void writeAddrWindow(int16_t x,int16_t y,uint16_t w,uint16_t h) override {
+    x += _xStart; y += _yStart;
+    _bus->writeC8D16D16(0x2A, x, x + w - 1);   // CASET
+    _bus->writeC8D16D16(0x2B, y, y + h - 1);   // RASET
+    _bus->writeCommand(0x2C);                  // RAMWR
+  }
+};
+#endif
 
 Arduino_DataBus* bus = nullptr;
 DarkGFX* gfx = nullptr;
+#ifndef BOARD_TDECK
 ExtensionIOXL9555 io;
 PowersBQ25896 PPM;
 Adafruit_TCA8418 keyboard;
 RotaryEncoder* enc = nullptr;
 HapticDriver_DRV2605 haptic;
+IRAM_ATTR void encTick(){ if(enc) enc->tick(); }
+#else
+// 5-way trackball: ISR pulse counters per direction + click state.
+static volatile uint32_t tbUp=0, tbDown=0, tbLeft=0, tbRight=0;
+IRAM_ATTR void tbUpISR(){ tbUp++; }
+IRAM_ATTR void tbDownISR(){ tbDown++; }
+IRAM_ATTR void tbLeftISR(){ tbLeft++; }
+IRAM_ATTR void tbRightISR(){ tbRight++; }
+#endif
 bool hapticOk = false;
 Preferences prefs;
-IRAM_ATTR void encTick(){ if(enc) enc->tick(); }
 
 // ---- keyboard matrix ----
+enum { KC_ENTER='\r', KC_BKSP='\b' };
+#ifndef BOARD_TDECK
 #define KB_ROWS 4
 #define KB_COLS 10
-enum { KC_ENTER='\r', KC_BKSP='\b', KC_FN=0x01, KC_SHIFT=0x02, KC_CAPS=0x03 };
+enum { KC_FN=0x01, KC_SHIFT=0x02, KC_CAPS=0x03 };
 struct KV { char a,b,c; };
 static const KV KEYMAP[KB_ROWS][KB_COLS] = {
   {{'q','Q','1'},{'w','W','2'},{'e','E','3'},{'r','R','4'},{'t','T','5'},{'y','Y','6'},{'u','U','7'},{'i','I','8'},{'o','O','9'},{'p','P','0'}},
@@ -94,6 +127,7 @@ static const KV KEYMAP[KB_ROWS][KB_COLS] = {
   {{' ',' ',' '},{0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0}},
 };
 static bool fnDown=false, shiftDown=false, capsLock=false;
+#endif
 
 // ---- UI palette ----
 static int SCR_W=480, SCR_H=222;
@@ -183,33 +217,65 @@ static uint32_t lastIrcAttempt=0, lastRxMs=0, lastKeepMs=0;
 
 // ---- battery ----
 static int batteryPct(){
+#ifndef BOARD_TDECK
   uint16_t mv = PPM.getBattVoltage();     // mV
+#else
+  uint16_t mv = analogReadMilliVolts(BAT_ADC_PIN) * 2;   // T-Deck's documented 2:1 divider formula
+#endif
   if(mv<2500) return -1;                  // no battery / not reading
   int pct=(int)((mv-3300)*100/(4200-3300));
   return pct<0?0:pct>100?100:pct;
 }
 
+// ───────────────────────── backlight ─────────────────────────
+// tftBacklight: T-Pager drives TFT_BL as plain PWM. T-Deck's backlight is a
+// dedicated 16-level chip driven by toggling the pin a counted number of
+// times (per LilyGo's own HelloWorld example) — analogWrite doesn't work.
+static void tftBacklight(uint8_t v){
+#ifndef BOARD_TDECK
+  analogWrite(TFT_BL,v);
+#else
+  static int level=-1;                    // -1 forces the first call to sync
+  int target=map(v,0,255,0,16);
+  if(level<0){ pinMode(TFT_BL,OUTPUT); digitalWrite(TFT_BL,LOW); delay(3); level=0; }
+  if(target==0){ digitalWrite(TFT_BL,LOW); delay(3); level=0; return; }
+  if(level==0){ digitalWrite(TFT_BL,HIGH); level=16; delayMicroseconds(30); }
+  int from=16-level, to=16-target, steps=(16+to-from)%16;
+  for(int i=0;i<steps;i++){ digitalWrite(TFT_BL,LOW); digitalWrite(TFT_BL,HIGH); }
+  level=target;
+#endif
+}
+// kbBacklight: per-key keyboard backlight only exists on the T-Pager.
+static void kbBacklight(uint8_t v){
+#ifndef BOARD_TDECK
+  analogWrite(KEYBOARD_BL,v);
+#endif
+}
+
 // ───────────────────────── activity / screensaver ─────────────────────────
-static void wakeBacklight(){ analogWrite(TFT_BL,200); analogWrite(KEYBOARD_BL,120); }
+static void wakeBacklight(){ tftBacklight(200); kbBacklight(120); }
 static void markActivity(){
   lastActivity=millis();
   if(state==ST_SAVER){ state=prevState; wakeBacklight(); uiDirty=true; }
 }
 
 // ───────────────────────── haptic ─────────────────────────
+// T-Deck has no vibration motor; hapticOk stays false there so buzz() is a no-op.
 static void buzz(int ms,uint8_t amp){
   if(!hapticOk) return;
+#ifndef BOARD_TDECK
   haptic.setMode(HapticMode::REAL_TIME_PLAYBACK);
   haptic.setRealtimeValue(amp);
   delay(ms);
   haptic.setRealtimeValue(0);
   haptic.setMode(HapticMode::INTERNAL_TRIGGER);
+#endif
 }
 static void notify(){
   markActivity();                          // a message wakes the screen
   if(!notifyEnabled) return;
   buzz(130,0x70); delay(70); buzz(130,0x70);    // double buzz
-  analogWrite(KEYBOARD_BL,255); delay(50); analogWrite(KEYBOARD_BL,120);
+  kbBacklight(255); delay(50); kbBacklight(120);
 }
 
 // ───────────────────────── rendering ─────────────────────────
@@ -411,7 +477,7 @@ static uint16_t svcol=ARA_RED;
 static void drawSaverStatus();
 static void saverEnter(){
   gfx->fillScreen(BLACK);
-  analogWrite(TFT_BL,70); analogWrite(KEYBOARD_BL,0);      // dim, but DARKCELL still readable
+  tftBacklight(70); kbBacklight(0);      // dim, but DARKCELL still readable
   svx=(SCR_W-SV_TW)/2; svy=(SCR_H-SV_TH)/2; psvx=svx; psvy=svy; svcol=ARA_RED;
   drawSaverStatus();
 }
@@ -462,6 +528,7 @@ static void render(){
 // ───────────────────────── hardware ─────────────────────────
 #define STEP(m) do{Serial.println(m);Serial.flush();}while(0)
 static void hwInit(){
+#ifndef BOARD_TDECK
   STEP("[hw] power"); pinMode(PIN_POWER_ON,OUTPUT); digitalWrite(PIN_POWER_ON,HIGH);
   pinMode(BK_BTN,INPUT_PULLUP); pinMode(ENCODER_KEY,INPUT_PULLUP);
   Wire.begin(I2C_SDA,I2C_SCL);
@@ -480,20 +547,37 @@ static void hwInit(){
   enc=new RotaryEncoder(ENCODER_INA,ENCODER_INB,RotaryEncoder::LatchMode::FOUR3);
   attachInterrupt(digitalPinToInterrupt(ENCODER_INA),encTick,CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENCODER_INB),encTick,CHANGE);
-  pinMode(KEYBOARD_BL,OUTPUT); analogWrite(KEYBOARD_BL,120);
+  pinMode(KEYBOARD_BL,OUTPUT); kbBacklight(120);
   bus=new Arduino_HWSPI(TFT_DC,TFT_CS,TFT_SCLK,TFT_MOSI,TFT_MISO,&SPI);
   // Wipe the ENTIRE ST7796 controller RAM (full 320x480, no offsets) to erase
   // any leftover pixels from a previous firmware (e.g. old Meshtastic status bar).
   { Arduino_GFX* wipe=new Arduino_ST7796(bus,TFT_RST,0,TFT_IPS,320,480,0,0,0,0);
     wipe->begin(); wipe->fillScreen(BLACK); delete wipe; }
+#else
+  STEP("[hw] power"); pinMode(PIN_POWER_ON,OUTPUT); digitalWrite(PIN_POWER_ON,HIGH);
+  // SD/radio share the display's SPI bus — deselect them before the display talks.
+  pinMode(SD_CS,OUTPUT); digitalWrite(SD_CS,HIGH);
+  pinMode(RADIO_CS,OUTPUT); digitalWrite(RADIO_CS,HIGH);
+  Wire.begin(I2C_SDA,I2C_SCL);
+  pinMode(KB_INT_PIN,INPUT);
+  pinMode(TB_UP,INPUT_PULLUP); pinMode(TB_DOWN,INPUT_PULLUP);
+  pinMode(TB_LEFT,INPUT_PULLUP); pinMode(TB_RIGHT,INPUT_PULLUP); pinMode(TB_CLICK,INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(TB_UP),tbUpISR,FALLING);
+  attachInterrupt(digitalPinToInterrupt(TB_DOWN),tbDownISR,FALLING);
+  attachInterrupt(digitalPinToInterrupt(TB_LEFT),tbLeftISR,FALLING);
+  attachInterrupt(digitalPinToInterrupt(TB_RIGHT),tbRightISR,FALLING);
+  Serial.println("[hw] haptic n/a (T-Deck has no haptic motor)");
+  bus=new Arduino_HWSPI(TFT_DC,TFT_CS,TFT_SCLK,TFT_MOSI,TFT_MISO,&SPI);
+#endif
   gfx=new DarkGFX(bus,TFT_RST,TFT_ROTATION,TFT_IPS,TFT_WIDTH,TFT_HEIGHT,TFT_COL_OFS1,TFT_ROW_OFS1,TFT_COL_OFS2,TFT_ROW_OFS2);
   gfx->begin(); gfx->setOffsets(dispX,dispY);      // apply saved alignment
   gfx->fillScreen(BLACK); SCR_W=gfx->width(); SCR_H=gfx->height();
-  pinMode(TFT_BL,OUTPUT); analogWrite(TFT_BL,200);
+  pinMode(TFT_BL,OUTPUT); tftBacklight(200);
   Serial.printf("[hw] display %dx%d\n",SCR_W,SCR_H);
 }
 
 // ───────────────────────── input ─────────────────────────
+#ifndef BOARD_TDECK
 static char decodeKey(uint8_t keynum,bool pressed){
   int k=(keynum&0x7F)-1; if(k<0||k/10>=KB_ROWS||k%10>=KB_COLS) return 0;
   const KV& kv=KEYMAP[k/10][k%10]; char base=kv.a;
@@ -505,6 +589,30 @@ static char decodeKey(uint8_t keynum,bool pressed){
 static int encDelta(){ static int last=0; int p=enc?enc->getPosition():0; int d=p-last; last=p; return d; }
 static bool encBtnEdge(){ static bool was=true; bool now=digitalRead(ENCODER_KEY); bool e=(was&&!now); was=now; return e; }
 static bool bkBtnEdge(){ static bool was=true; bool now=digitalRead(BK_BTN); bool e=(was&&!now); was=now; return e; }
+#else
+// Trackball nav: up/left = -1, down/right = +1, net since the last call.
+static int encDelta(){
+  static uint32_t lu=0,ld=0,ll=0,lr=0;
+  uint32_t u=tbUp,d=tbDown,l=tbLeft,r=tbRight;
+  int delta=(int)(d-ld)+(int)(r-lr)-(int)(u-lu)-(int)(l-ll);
+  lu=u; ld=d; ll=l; lr=r;
+  return delta;
+}
+// TB_CLICK doubles as both nav buttons: a short press/release selects, a
+// press held >=600ms fires "back" once (while still held).
+static uint32_t tbDownMs=0; static bool tbHeld=false, tbLongFired=false;
+static bool encBtnEdge(){
+  bool now=!digitalRead(TB_CLICK); bool selectEdge=false;
+  if(now && !tbHeld){ tbDownMs=millis(); tbLongFired=false; }
+  if(!now && tbHeld && !tbLongFired) selectEdge=true;
+  tbHeld=now; return selectEdge;
+}
+static bool bkBtnEdge(){
+  bool now=!digitalRead(TB_CLICK); bool backEdge=false;
+  if(now && !tbLongFired && millis()-tbDownMs>=600){ backEdge=true; tbLongFired=true; }
+  return backEdge;
+}
+#endif
 
 static void beginTextIn(const char* title,bool pw,int purpose,const String& initial=""){
   state=ST_TEXTIN; tiTitle=title; tiPassword=pw; tiPurpose=purpose; tiBuf=initial; uiDirty=true;
@@ -569,35 +677,51 @@ static void handleEmailInput(){
   }
 }
 
+static void handleKeyChar(char c){
+  if(!c) return; markActivity();
+  if(state==ST_CHAT && scrollOff==0 && unread>0){ unread=0; uiDirty=true; }
+  if(state==ST_HOME){
+    if(c==KC_ENTER) openHomeTab();
+    else if(c=='a'||c=='w'){ homeSel=(homeSel+HOME_N-1)%HOME_N; uiDirty=true; }
+    else if(c=='d'||c=='s'){ homeSel=(homeSel+1)%HOME_N; uiDirty=true; }
+  } else if(state==ST_CHAT){
+    if(c==KC_ENTER){ if(inputLine.length()){ String o=inputLine; inputLine=""; if(ircJoined){irc.printf("PRIVMSG %s :%s\r\n",IRC_CHAN,o.c_str()); pushMsg(cfgNick,o,true);} else { if(!WiFi.isConnected()) pushMsg("*","wifi offline - check WiFi tab/password",false); else if(!irc.connected()){ pushMsg("*","irc connecting - try again",false); ircConnect(); } else pushMsg("*","joining channel - try again",false); } scrollOff=0; uiDirty=true; } }
+    else if(c==KC_BKSP){ if(inputLine.length()){inputLine.remove(inputLine.length()-1);uiDirty=true;} }
+    else if(c>=' '&&c<127){ if(inputLine.length()<400){inputLine+=c;uiDirty=true;} }
+  } else if(state==ST_TEXTIN){
+    if(c==KC_ENTER){
+      if(tiPurpose==2){ if(tiBuf.length()){cfgSaveNick(tiBuf);ircNick=tiBuf;irc.stop();} state=ST_CHAT; uiDirty=true; }
+      else if(tiPurpose==1){ cfgSaveWifi(pendingSsid,tiBuf); WiFi.disconnect(); WiFi.begin(cfgSsid.c_str(),cfgPass.c_str()); state=ST_CHAT; uiDirty=true; }
+      else if(tiPurpose==3){ cfgSaveEmail(tiBuf); pushMsg("email","address saved",false); state=ST_EMAIL; uiDirty=true; }
+      else if(tiPurpose==4){ if(tiBuf.length()){ cfgSaveEmailPass(tiBuf); pushMsg("email","app password saved",false); } state=ST_EMAIL; uiDirty=true; }
+    } else if(c==KC_BKSP){ if(tiBuf.length()){tiBuf.remove(tiBuf.length()-1);uiDirty=true;} }
+    else if(c>=' '&&c<127){ if(tiBuf.length()<63){tiBuf+=c;uiDirty=true;} }
+  } else if(state==ST_CALIB){
+    if(c=='a'&&dispX>0){dispX--;gfx->setOffsets(dispX,dispY);uiDirty=true;}
+    else if(c=='d'&&dispX<120){dispX++;gfx->setOffsets(dispX,dispY);uiDirty=true;}
+    else if(c=='w'&&dispY>0){dispY--;gfx->setOffsets(dispX,dispY);uiDirty=true;}
+    else if(c=='s'&&dispY<120){dispY++;gfx->setOffsets(dispX,dispY);uiDirty=true;}
+    else if(c==KC_ENTER){ cfgSaveDisp(); state=ST_MENU; uiDirty=true; }
+  }
+}
 static void pumpInput(){
+#ifndef BOARD_TDECK
   while(keyboard.available()>0){
     int ev=keyboard.getEvent(); bool pressed=ev&0x80; char c=decodeKey((uint8_t)ev,pressed);
-    if(!c) continue; markActivity();
-    if(state==ST_CHAT && scrollOff==0 && unread>0){ unread=0; uiDirty=true; }
-    if(state==ST_HOME){
-      if(c==KC_ENTER) openHomeTab();
-      else if(c=='a'||c=='w'){ homeSel=(homeSel+HOME_N-1)%HOME_N; uiDirty=true; }
-      else if(c=='d'||c=='s'){ homeSel=(homeSel+1)%HOME_N; uiDirty=true; }
-    } else if(state==ST_CHAT){
-      if(c==KC_ENTER){ if(inputLine.length()){ String o=inputLine; inputLine=""; if(ircJoined){irc.printf("PRIVMSG %s :%s\r\n",IRC_CHAN,o.c_str()); pushMsg(cfgNick,o,true);} else { if(!WiFi.isConnected()) pushMsg("*","wifi offline - check WiFi tab/password",false); else if(!irc.connected()){ pushMsg("*","irc connecting - try again",false); ircConnect(); } else pushMsg("*","joining channel - try again",false); } scrollOff=0; uiDirty=true; } }
-      else if(c==KC_BKSP){ if(inputLine.length()){inputLine.remove(inputLine.length()-1);uiDirty=true;} }
-      else if(c>=' '&&c<127){ if(inputLine.length()<400){inputLine+=c;uiDirty=true;} }
-    } else if(state==ST_TEXTIN){
-      if(c==KC_ENTER){
-        if(tiPurpose==2){ if(tiBuf.length()){cfgSaveNick(tiBuf);ircNick=tiBuf;irc.stop();} state=ST_CHAT; uiDirty=true; }
-        else if(tiPurpose==1){ cfgSaveWifi(pendingSsid,tiBuf); WiFi.disconnect(); WiFi.begin(cfgSsid.c_str(),cfgPass.c_str()); state=ST_CHAT; uiDirty=true; }
-        else if(tiPurpose==3){ cfgSaveEmail(tiBuf); pushMsg("email","address saved",false); state=ST_EMAIL; uiDirty=true; }
-        else if(tiPurpose==4){ if(tiBuf.length()){ cfgSaveEmailPass(tiBuf); pushMsg("email","app password saved",false); } state=ST_EMAIL; uiDirty=true; }
-      } else if(c==KC_BKSP){ if(tiBuf.length()){tiBuf.remove(tiBuf.length()-1);uiDirty=true;} }
-      else if(c>=' '&&c<127){ if(tiBuf.length()<63){tiBuf+=c;uiDirty=true;} }
-    } else if(state==ST_CALIB){
-      if(c=='a'&&dispX>0){dispX--;gfx->setOffsets(dispX,dispY);uiDirty=true;}
-      else if(c=='d'&&dispX<120){dispX++;gfx->setOffsets(dispX,dispY);uiDirty=true;}
-      else if(c=='w'&&dispY>0){dispY--;gfx->setOffsets(dispX,dispY);uiDirty=true;}
-      else if(c=='s'&&dispY<120){dispY++;gfx->setOffsets(dispX,dispY);uiDirty=true;}
-      else if(c==KC_ENTER){ cfgSaveDisp(); state=ST_MENU; uiDirty=true; }
+    handleKeyChar(c);
+  }
+#else
+  // T-Deck's ESP32-C3 keyboard co-processor sends decoded ASCII directly.
+  if(digitalRead(KB_INT_PIN)==LOW){
+    Wire.requestFrom((uint8_t)KB_I2C_ADDR,(uint8_t)1);
+    if(Wire.available()){
+      char c=Wire.read();
+      static bool loggedOnce=false;
+      if(!loggedOnce && c){ Serial.printf("[hw] kb raw byte: 0x%02X\n",(uint8_t)c); loggedOnce=true; }
+      handleKeyChar(c);
     }
   }
+#endif
   int d=encDelta(); if(d!=0)markActivity();
   bool eb=encBtnEdge(), bb=bkBtnEdge(); if(eb||bb)markActivity();
   if((d!=0||eb||bb) && state==ST_CHAT && scrollOff==0 && unread>0){ unread=0; uiDirty=true; }
