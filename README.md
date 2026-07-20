@@ -1,137 +1,139 @@
 # darksec-pager
 
-Firmware for the LilyGO T-LoRa-Pager / T-Pager and the LilyGo T-Deck, built around a pager-style home screen.
+Custom firmware for the **LilyGo T-LoRa-Pager / T-Pager** and the **LilyGo T-Deck**
+(both ESP32-S3) that turns the board into a hacker-style pager: it boots straight
+into an IRC chat client and carries a pocketful of wardriving / recon / cyberdeck
+tools.
+
+Joins **`#DarksecHQ` on irc.libera.chat:6697 (TLS)**, which is bridged to
+[darksec.uk/chat](https://darksec.uk/chat) — so the pager, IRC, and the web chat
+all talk to each other.
+
+> **Heads up:** this is a personal/community project for specific boards. No
+> warranty. You bring your own Wi-Fi, IRC nick, and (optionally) email + WiGLE
+> credentials — none of that lives in this repo.
 
 ## Features
 
-- Home screen with tabs: Chat, Email, Wi-Fi, OTA, Setup.
-- IRC chat client for `#DarksecHQ` on Libera.Chat over TLS.
-- Wi-Fi setup from the device keyboard and encoder (T-Pager) or trackball (T-Deck).
-- OTA update mode from the device menu.
-- Unread chat count in the header and screensaver.
-- T-Pager: 222x480 native ST7796 panel, rotated to a 480x222 UI. T-Deck: 240x320 native ST7789 panel, rotated to a 320x240 UI.
-- Email tab scaffold with account/app-password storage in device NVS.
+**Comms**
+- IRC chat client (TLS) with colored nicks, word-wrap, NTP timestamps, unread counter
+- Per-user IRC nickname — prompted on first boot, changeable any time
+- Email tab (IMAP inbox) with the app-password stored only on-device (NVS)
 
-## Secrets
+**Tools**
+- **Wardriver** — Wi-Fi scan logging in WiGLE CSV format with on-device wigle.net sign-in + upload
+- **Flock Finder** — BLE detector for surveillance cameras (HaleHound-style)
+- **Tracker detector** — spots nearby AirTags / BLE trackers
+- **Network recon** — quick look at the local network
+- **Clock / Stopwatch / Timer**, **Hash & Encode** (MD5/SHA/base64), **QR generator**
+- **Voice memo** recorder (T-Pager only — see Hardware below)
+- Notes stored on the SD card
 
-Do not commit Wi-Fi passwords, email addresses, email passwords, or OTA passwords.
-
-For local defaults, copy `src/private_config.example.h` to `src/private_config.h` and edit that private file. It is ignored by git.
-
-```cpp
-#define DEFAULT_SSID "YourHotspot"
-#define DEFAULT_PASS "YourWiFiPassword"
-#define DEFAULT_NICK "DarkSecPager"
-#define DEFAULT_OTA_PASS "change-this-ota-password"
-#define DEFAULT_EMAIL "you@example.com"
-#define DEFAULT_EMAIL_PASS "your-email-app-password"
-```
-
-Gmail requires an app password for embedded devices. A normal Google account password usually will not work.
+**UX / hardware**
+- Double-buffered UI via a PSRAM framebuffer (eliminates scroll flicker; falls back to direct render if PSRAM is unavailable)
+- Battery gauge with charging indicator, 12-hour clock, local timezone (auto-DST)
+- Keyboard-backlight + speaker notifications on new messages, with volume control (+ haptic on T-Pager)
+- Bouncing "DARKPAGER" screensaver
+- Auto Wi-Fi fallback: prefers your hotspot, drops to a secondary network when it's gone
+- Configured to **stay powered on** (no accidental sleep/off)
 
 ## Hardware
 
-- ESP32-S3 based LilyGO T-LoRa-Pager / T-Pager, or LilyGo T-Deck.
-- T-Pager: ST7796 display, native visible area `222x480`, rotary encoder + press + separate back button, TCA8418 matrix keyboard.
-- T-Deck: ST7789 display, native visible area `240x320`, 5-way trackball (click = select, hold ≥600ms = back), onboard I2C keyboard co-processor.
-- USB serial/JTAG upload via `/dev/ttyACM0` on Linux (unverified for T-Deck — if it doesn't enumerate there, try `/dev/ttyUSB0`).
+Two supported boards, selected by PlatformIO environment (`t-lora-pager` vs `t-deck`):
 
-T-Deck pin assignments come from LilyGo's own reference pinout and are confirmed working on real hardware, USB flashing included. Despite the T-Deck's flash chip physically being 16MB, `platformio.ini` deliberately declares `board_build.flash_size = 8MB` / `default_8MB.csv` — using the true 16MB config reproducibly reset-loops this exact board/toolchain combo before `setup()` ever runs (same class of issue the T-Pager env's comment already flags for that board). If the display looks rotated/mirrored or offset, use `Setup > Calibrate Screen` on-device — the same calibration flow works on both boards.
+- **T-LoRa-Pager / T-Pager:** ESP32-S3, octal PSRAM, ST7796 display (native `222×480`, driven as a `480×222` landscape UI), TCA8418 QWERTY matrix keyboard + rotary encoder, BQ25896 charger + battery, ES8311 speaker/mic codec.
+- **T-Deck:** ESP32-S3, ST7789 display (native `240×320`, driven as a `320×240` landscape UI), onboard I2C keyboard co-processor, 5-way trackball (click = select, hold ≥600ms = back — there's no separate back button on this board), no PMIC (battery read via ADC), no haptic motor. Pin assignments come from LilyGo's own reference pinout and are confirmed working on real hardware, USB flashing included.
 
-## Build
+**Two features are stubbed on T-Deck** (the hardware they need — GPS and the ES8311 mic/speaker codec — isn't on this board):
+- **Voice Memo** shows "N/A — no mic/codec on this board" instead of recording.
+- **Wardriver** has no GPS fix, ever, so it logs Wi-Fi networks with placeholder `0,0` coordinates instead of silently never logging anything — the on-screen status says "no GPS - logging w/o coords".
 
-Install PlatformIO, then run:
+**T-Deck flash config:** despite the chip physically having 16MB of flash (confirmed via `esptool.py flash_id`), `platformio.ini` deliberately declares `board_build.flash_size = 8MB` / `default_8MB.csv` — the true 16MB config reproducibly reset-loops this exact board/toolchain combo before `setup()` ever runs (same class of issue already noted for the T-Pager env below). PSRAM (`board_build.arduino.memory_type = qio_opi`) is also **not yet enabled** for T-Deck — this chip's actual PSRAM type/presence hasn't been confirmed, and given the flash-size lesson, guessing wrong there is a plausible new boot-loop risk; the app runs fine without it (direct render, no double-buffer) until it's verified on hardware.
 
-```sh
-pio run -e t-lora-pager   # T-Pager
-pio run -e t-deck         # T-Deck
-```
+USB serial/JTAG upload is via `/dev/ttyACM0` on Linux for both boards.
 
-On this machine PlatformIO is available as:
+## Quick start
 
-```sh
-~/.local/bin/pio run -e t-lora-pager
-~/.local/bin/pio run -e t-deck
-```
+### 1. Configure your secrets
 
-## Flash Over USB
-
-Plug in the pager and check the serial device, usually `/dev/ttyACM0`:
+Copy the template and edit your private copy (it's git-ignored):
 
 ```sh
-ls /dev/ttyACM*
+cp src/private_config.example.h src/private_config.h
 ```
 
-Flash:
+```cpp
+#define DEFAULT_SSID  "YourHotspot"          // primary Wi-Fi (e.g. phone hotspot)
+#define DEFAULT_PASS  "YourWiFiPassword"
+#define DEFAULT_SSID2 "YourHomeNetwork"      // optional fallback network
+#define DEFAULT_PASS2 "YourHomePassword"
+#define DEFAULT_NICK  "DarkSecPager"         // your IRC nick (also promptable on-device)
+#define DEFAULT_TZ    "EST5EDT,M3.2.0,M11.1.0" // POSIX TZ (auto-DST); see main.cpp for other zones
+#define DEFAULT_OTA_PASS   "change-this"
+#define DEFAULT_EMAIL      "you@example.com"       // optional
+#define DEFAULT_EMAIL_PASS "your-email-app-password" // Gmail needs an app password
+```
+
+Everything here is optional — you can also set Wi-Fi and your nick from the
+device UI. Nothing in `private_config.h` is ever committed.
+
+### 2. Build & flash (PlatformIO)
 
 ```sh
-pio run -e t-lora-pager -t upload --upload-port /dev/ttyACM0   # T-Pager
-pio run -e t-deck -t upload --upload-port /dev/ttyACM0         # T-Deck
+pio run -e t-lora-pager                                        # T-Pager: build
+pio run -e t-lora-pager -t upload --upload-port /dev/ttyACM0   # T-Pager: flash over USB
+
+pio run -e t-deck                                               # T-Deck: build
+pio run -e t-deck -t upload --upload-port /dev/ttyACM0         # T-Deck: flash over USB
+
+pio device monitor -p /dev/ttyACM0 -b 115200                   # boot logs (either board)
 ```
 
-Or on this machine:
+A healthy T-Pager boot logs `[hw] display 480x222`, `[wifi] up <ip>`, and `psram=1`.
+A healthy T-Deck boot logs `[hw] display 320x240`, `[wifi] up <ip>`, and
+`[gfx] direct (no/low PSRAM ...)` (expected — see PSRAM note above). On T-Deck,
+the first key press also logs the raw keyboard byte (`[hw] kb raw byte: 0x..`) —
+useful for confirming Enter/Backspace map to the expected codes if text entry
+misbehaves. If the display looks rotated/mirrored/offset on either board, use
+`Setup > Calibrate Screen` on-device.
 
-```sh
-~/.local/bin/pio run -e t-lora-pager -t upload --upload-port /dev/ttyACM0
-~/.local/bin/pio run -e t-deck -t upload --upload-port /dev/ttyACM0
-```
+## Controls
 
-Monitor boot logs:
+| Action | T-Pager | T-Deck |
+| --- | --- | --- |
+| Type / compose | keyboard (Enter = send) | keyboard (Enter = send) |
+| Scroll history / move in menus | rotate the **encoder** | roll the **trackball** |
+| Open menu / select | **press** the encoder | **click** the trackball |
+| Back / cancel | Backspace, or the BK button | Backspace, or **hold** the trackball click ≥600ms |
+| Set your nick | System → Set Nickname (or the first-boot prompt) | same |
+| Change Wi-Fi | System → WiFi Setup | same |
 
-```sh
-pio device monitor -p /dev/ttyACM0 -b 115200
-```
+## OTA updates
 
-Expected display log after boot:
-
-```text
-[hw] display 480x222     # T-Pager
-[hw] display 320x240     # T-Deck
-```
-
-On T-Deck, the first key press also logs the raw keyboard byte (`[hw] kb raw byte: 0x..`) — useful for confirming Enter/Backspace map to the expected codes if text entry misbehaves.
-
-## Wi-Fi Setup
-
-From the pager home screen:
-
-1. Open `WiFi`.
-2. Select your network (encoder on T-Pager, trackball on T-Deck).
-3. Press to select (encoder press on T-Pager, trackball click on T-Deck).
-4. Type the password.
-5. Press Enter to save.
-
-Saved Wi-Fi credentials are stored in device NVS, not in the repository.
-
-## OTA Updates
-
-First flash once over USB. Then on the pager:
-
-1. Open `OTA` from the home screen.
-2. The pager starts OTA mode and shows/logs its IP address.
-3. Upload over Wi-Fi:
+Flash once over USB, then from the pager open **OTA** (it shows its IP), and:
 
 ```sh
 pio run -e t-lora-pager-ota -t upload   # T-Pager
 pio run -e t-deck-ota -t upload         # T-Deck
 ```
 
-Or on this machine:
+Set your own OTA password in `private_config.h` before using this on a real network.
 
-```sh
-~/.local/bin/pio run -e t-lora-pager-ota -t upload
-~/.local/bin/pio run -e t-deck-ota -t upload
-```
+## Build notes (hard-won)
 
-Default public OTA password is `changeme`. Change it in your ignored `src/private_config.h` before using OTA on a real network.
+- **Flash size must be 8MB** on both boards (`board_build.flash_size = 8MB` +
+  `default_8MB.csv`), even though the T-Deck's chip physically has 16MB — a
+  16MB config reset-loops before `setup()` on both boards' exact toolchain/
+  silicon combo (confirmed via serial: `rst:0x3 (RTC_SW_SYS_RST)` repeating
+  thousands of times a minute, never reaching app code).
+- **T-Pager PSRAM needs `memory_type = qio_opi` + `-DBOARD_HAS_PSRAM`.** Without
+  them the board builds as the "No PSRAM" variant. The firmware guards the
+  framebuffer on PSRAM presence, so it stays usable (direct-render) even if
+  PSRAM fails to init. T-Deck PSRAM is not yet enabled — see Hardware above.
+- USB-CDC serial on boot is enabled for debugging (`ARDUINO_USB_MODE=1` + `CDC_ON_BOOT=1`).
 
-## Email
+## Credentials & privacy
 
-The Email tab stores an address and app password in device NVS. Full SMTP/IMAP send/receive is intentionally kept generic so the public repo does not contain anyone's email credentials.
-
-Recommended next implementation path:
-
-- SMTP send through `smtp.gmail.com:465` or the user's provider.
-- IMAP receive through `imap.gmail.com:993` or the user's provider.
-- Store account settings only in NVS or ignored local config.
-- Never commit app passwords.
+Wi-Fi passwords, email/app passwords, WiGLE tokens, and your IRC nick are stored
+only in device NVS or in the git-ignored `src/private_config.h`. This repository
+contains **no** personal credentials — bring your own.
