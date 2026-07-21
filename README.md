@@ -54,7 +54,29 @@ USB serial/JTAG upload is via `/dev/ttyACM0` on Linux for both boards.
 
 ## Quick start
 
-### 1. Configure your secrets
+### Option A: flash a pre-built binary (T-Deck, no build tools needed)
+
+Each [GitHub Release](../../releases) includes `darksec-pager-t-deck.bin` — a
+single merged image (bootloader + partition table + app) for the T-Deck.
+Flash it at offset `0x0` with `esptool.py` or any GUI ESP flasher
+(Espressif Flash Download Tool, ESP32 Flash Tool, esp-web-flasher, etc).
+
+```sh
+pip install esptool   # if you don't already have it
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 \
+  write_flash 0x0 darksec-pager-t-deck.bin
+```
+
+Flasher settings if your tool asks: **flash mode `DIO`, flash freq `80MHz`,
+flash size `8MB`**, single file at offset `0x0`. This image ships with
+whatever Wi-Fi/IRC/OTA defaults were baked into that release's
+`private_config.h` (or none — see Controls below to set Wi-Fi and your nick
+from the on-device UI instead). To bake in your *own* secrets at build time,
+or to build for the T-Pager, use Option B.
+
+### Option B: build from source
+
+#### 1. Configure your secrets
 
 Copy the template and edit your private copy (it's git-ignored):
 
@@ -77,7 +99,7 @@ cp src/private_config.example.h src/private_config.h
 Everything here is optional — you can also set Wi-Fi and your nick from the
 device UI. Nothing in `private_config.h` is ever committed.
 
-### 2. Build & flash (PlatformIO)
+#### 2. Build & flash (PlatformIO)
 
 ```sh
 pio run -e t-lora-pager                                        # T-Pager: build
@@ -131,6 +153,11 @@ Set your own OTA password in `private_config.h` before using this on a real netw
   framebuffer on PSRAM presence, so it stays usable (direct-render) even if
   PSRAM fails to init. T-Deck PSRAM is not yet enabled — see Hardware above.
 - USB-CDC serial on boot is enabled for debugging (`ARDUINO_USB_MODE=1` + `CDC_ON_BOOT=1`).
+- **T-Deck keyboard co-processor's interrupt pin (`KB_INT_PIN`) never actually
+  goes low on real hardware** (confirmed on-device — it read HIGH throughout
+  active typing), so the firmware polls the I2C register directly every loop
+  instead of gating reads on that pin. The register self-clears to `0x00`
+  after each read, so this doesn't produce duplicate keystrokes.
 
 ## Credentials & privacy
 

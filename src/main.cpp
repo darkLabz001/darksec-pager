@@ -1792,7 +1792,11 @@ static void pumpInput(){
   }
 #else
   // T-Deck's ESP32-C3 keyboard co-processor sends decoded ASCII directly.
-  if(digitalRead(KB_INT_PIN)==LOW){
+  // KB_INT_PIN never actually goes low on this hardware (confirmed on real
+  // hardware — it read HIGH throughout active typing), so poll the I2C
+  // register directly every loop() instead of gating on it. The register
+  // self-clears to 0x00 after each read (no duplicate-read issue observed).
+  {
     Wire.requestFrom((uint8_t)KB_I2C_ADDR,(uint8_t)1);
     if(Wire.available()){
       char c=Wire.read();
